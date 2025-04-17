@@ -6,11 +6,13 @@ from .utils import (
     log_info, log_success, log_error, log_stage,
     format_time, format_number
 )
+from sanitizer import sanitize_document_recursive
 
 class DataMigrator:
-    def __init__(self, batch_size=100, max_retries=3):
+    def __init__(self, batch_size=100, max_retries=3, sanitize=False):
         self.batch_size = batch_size
         self.max_retries = max_retries
+        self.sanitize = sanitize
 
     def _get_partition_key_path(self, container):
         return container.read()["partitionKey"]["paths"][0].strip("/")
@@ -99,10 +101,18 @@ class DataMigrator:
                                     if item.get("_etag") == target_doc.get("_etag"):
                                         skipped += 1
                                     else:
-                                        target_container.replace_item(item=target_doc, body=item)
+                                        item_to_write = item.copy()
+                                        if self.sanitize: 
+                                            item_to_write = sanitize_document_recursive(item_to_write)
+                                        target_container.replace_item(item=target_doc, body=item_to_write)
                                         updated += 1
                                 except exceptions.CosmosResourceNotFoundError:
-                                    target_container.create_item(body=item)
+                                    item_to_write = item.copy()
+                                    if self.sanitize:
+                                        item_to_write = sanitize_document_recursive(item_to_write)
+
+                                    # Write to Cosmos DB
+                                    target_container.create_item(body=item_to_write)
                                     inserted += 1
 
                                 break  # Success

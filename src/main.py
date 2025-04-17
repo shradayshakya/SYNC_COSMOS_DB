@@ -20,10 +20,9 @@ def get_args():
                         help="Target Cosmos DB account key")
     parser.add_argument("--batch-size", type=int, default=int(os.environ.get("BATCH_SIZE", "100")),
                         help="Number of documents to process in a batch")
+    parser.parse_args("--sanitize", help="Sanitize PII data", type=bool, default=os.environ.get("SANITIZE", "false").lower() == "true")
     parser.add_argument("--max-retries", type=int, default=3,
                         help="Maximum number of retries for failed operations")
-    parser.add_argument("--skip-existing", action="store_true", default=True,
-                        help="Skip documents that already exist in the target")
     parser.add_argument("--database", help="Migrate only this specific database")
     parser.add_argument("--container", help="Migrate only this specific container (requires --database)")
     return parser.parse_args()
@@ -99,7 +98,8 @@ def main():
         # Initialize migrator
         migrator = DataMigrator(
             batch_size=args.batch_size,
-            max_retries=args.max_retries
+            max_retries=args.max_retries,
+            sanitize=args.sanitize
         )
         
         results = []
