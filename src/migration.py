@@ -8,8 +8,6 @@ from .utils import (
 )
 
 class DataMigrator:
-    """Handles the migration of data between Cosmos DB containers"""
-
     def __init__(self, batch_size=100, max_retries=3):
         self.batch_size = batch_size
         self.max_retries = max_retries
@@ -31,19 +29,17 @@ class DataMigrator:
             start_time = time.time()
             log_stage(f"Starting migration for container \"{source_container.id}\"")
 
-            # Enforce PK alignment
             source_pk_path = self._get_partition_key_path(source_container)
             target_pk_path = self._get_partition_key_path(target_container)
 
             if source_pk_path != target_pk_path:
                 raise ValueError(
-                    f"Partition key mismatch for container '{source_container.id}':\n"
+                    f"Partition key mismatch in container '{source_container.id}':\n"
                     f"  • Source: {source_pk_path}\n"
-                    f"  • Target: {target_pk_path}\n"
-                    f"Aborting migration — partition key paths must match."
+                    f"  • Target: {target_pk_path}"
                 )
 
-            # Count total docs
+            # Count total documents
             try:
                 count_query = "SELECT VALUE COUNT(1) FROM c"
                 total_items = list(source_container.query_items(
@@ -54,9 +50,9 @@ class DataMigrator:
                 log_error(f"Failed to count items: {str(e)}")
                 total_items = 0
 
-            log_info(f"Found {format_number(total_items)} items to migrate")
+            log_info(f"Found {format_number(total_items)} items to process")
 
-            copied = skipped = errors = 0
+            inserted = updated = skipped = errors = 0
             continuation_token = None
 
             with tqdm(total=total_items, desc="Migrating items", unit="docs") as pbar:
@@ -77,44 +73,45 @@ class DataMigrator:
                     for item in items:
                         item_id = item.get("id")
                         if not item_id:
-                            log_error("Skipping item with missing 'id'")
+                            log_error("Skipping item with no 'id'")
                             errors += 1
                             pbar.update(1)
                             continue
 
                         pk_value = self._get_partition_key_value(item, target_pk_path)
 
-                        if pk_value is None or isinstance(pk_value, (dict, list)) or pk_value in ["", None]:
-                            log_error(
-                                f"Skipping item {item_id}: invalid or missing partition key '{target_pk_path}'\n"
-                                f"  Value: {repr(pk_value)}\n"
-                                f"  Full item: {json.dumps(item)}"
-                            )
+                        if pk_value is None or isinstance(pk_value, (dict, list)):
+                            log_error(f"Skipping item {item_id}: invalid/missing partition key '{target_pk_path}'")
                             errors += 1
                             pbar.update(1)
                             continue
 
-                        # Ensure partition key exists in body
-                        if target_pk_path not in item:
-                            item[target_pk_path] = pk_value
-
                         for attempt in range(1, self.max_retries + 1):
                             try:
-                                target_container.create_item(body=item)
-                                copied += 1
-                                break
-                            except exceptions.CosmosResourceExistsError:
-                                skipped += 1
-                                break
-                            except exceptions.CosmosHttpResponseError as e:
-                                if attempt == self.max_retries:
-                                    log_error(f"Failed to insert item {item_id}: {str(e)}")
-                                    errors += 1
+                                # Try reading from target
+                                try:
+                                    target_doc = target_container.read_item(
+                                        item=item_id,
+                                        partition_key=pk_value
+                                    )
+
+                                    # Compare _etag values
+                                    if item.get("_etag") == target_doc.get("_etag"):
+                                        skipped += 1
+                                    else:
+                                        target_container.replace_item(item=target_doc, body=item)
+                                        updated += 1
+                                except exceptions.CosmosResourceNotFoundError:
+                                    target_container.create_item(body=item)
+                                    inserted += 1
+
+                                break  # Success
                             except Exception as e:
                                 if attempt == self.max_retries:
-                                    log_error(f"Unexpected error on item {item_id}: {str(e)}")
+                                    log_error(f"Failed to process item {item_id}: {str(e)}")
                                     errors += 1
-                            time.sleep(0.5 * attempt)
+                                else:
+                                    time.sleep(0.5 * attempt)
 
                         pbar.update(1)
 
@@ -123,19 +120,21 @@ class DataMigrator:
                         break
 
             duration = time.time() - start_time
-            rate = copied / duration if duration > 0 else 0
+            rate = (inserted + updated) / duration if duration > 0 else 0
 
             log_success(
                 f"Migration completed for container \"{source_container.id}\":\n"
-                f"  • Copied:  {format_number(copied)}\n"
-                f"  • Skipped: {format_number(skipped)} (existing)\n"
-                f"  • Errors:  {format_number(errors)}\n"
+                f"  • Inserted: {format_number(inserted)}\n"
+                f"  • Updated:  {format_number(updated)}\n"
+                f"  • Skipped:  {format_number(skipped)}\n"
+                f"  • Errors:   {format_number(errors)}\n"
                 f"  • Duration: {format_time(duration)}\n"
-                f"  • Rate:    {format_number(int(rate))} items/sec"
+                f"  • Rate:     {format_number(int(rate))} docs/sec"
             )
 
             return {
-                "copied": copied,
+                "inserted": inserted,
+                "updated": updated,
                 "skipped": skipped,
                 "errors": errors,
                 "duration": duration,
@@ -147,7 +146,7 @@ class DataMigrator:
             raise
 
     def verify_migration(self, source_container, target_container):
-        """Verify migration by comparing item counts"""
+        """Verify by comparing document counts."""
         try:
             log_info(f"Verifying migration for container \"{source_container.id}\"...")
             count_query = "SELECT VALUE COUNT(1) FROM c"
