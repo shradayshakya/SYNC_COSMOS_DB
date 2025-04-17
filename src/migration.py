@@ -6,7 +6,7 @@ from .utils import (
     log_info, log_success, log_error, log_stage,
     format_time, format_number
 )
-from sanitizer import sanitize_document_recursive
+from .sanitizer import sanitize_document_recursive
 
 class DataMigrator:
     def __init__(self, batch_size=100, max_retries=3, sanitize=False):
