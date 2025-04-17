@@ -94,13 +94,7 @@ class DataMigrator:
                                         item=item_id,
                                         partition_key=pk_value
                                     )
-
-                                    # Compare _etag values
-                                    if item.get("_etag") == target_doc.get("_etag"):
-                                        skipped += 1
-                                    else:
-                                        target_container.replace_item(item=target_doc, body=item)
-                                        updated += 1
+                                    skipped += 1
                                 except exceptions.CosmosResourceNotFoundError:
                                     target_container.create_item(body=item)
                                     inserted += 1
