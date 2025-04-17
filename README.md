@@ -39,6 +39,14 @@ TARGET_KEY=your-target-key
 
 ## 🚀 Running the Migration
 
+### Azure CLI Authentication (if using role-based access)
+
+If you're using Azure AD credentials instead of keys:
+
+```bash
+az login
+```
+
 ### Full migration (all databases and containers):
 
 ```bash
