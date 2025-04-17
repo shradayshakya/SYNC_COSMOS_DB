@@ -9,31 +9,39 @@ from .utils import (
 from .sanitizer import sanitize_document_recursive
 
 class DataMigrator:
+    """Handles the migration of data between Cosmos DB containers"""
+
     def __init__(self, batch_size=100, max_retries=3, sanitize=False):
         self.batch_size = batch_size
         self.max_retries = max_retries
         self.sanitize = sanitize
 
     def _get_partition_key_path(self, container):
+        """Get the partition key path for a container"""
         return container.read()["partitionKey"]["paths"][0].strip("/")
 
     def _get_partition_key_value(self, item, pk_path):
+        """Extract partition key value from the document"""
         try:
             keys = pk_path.split("/")
             for key in keys:
                 item = item[key]
             return item
         except (KeyError, TypeError):
+            log_error(f"Error extracting partition key value: {pk_path} not found in item {item.get('id')}")
             return None
 
     def migrate_container(self, source_container, target_container):
+        """Migrate documents from source container to target container"""
         try:
             start_time = time.time()
             log_stage(f"Starting migration for container \"{source_container.id}\"")
 
+            # Get partition key paths for source and target containers
             source_pk_path = self._get_partition_key_path(source_container)
             target_pk_path = self._get_partition_key_path(target_container)
 
+            # Ensure source and target containers have the same partition key path
             if source_pk_path != target_pk_path:
                 raise ValueError(
                     f"Partition key mismatch in container '{source_container.id}':\n"
@@ -41,7 +49,7 @@ class DataMigrator:
                     f"  • Target: {target_pk_path}"
                 )
 
-            # Count total documents
+            # Count total documents in the source container
             try:
                 count_query = "SELECT VALUE COUNT(1) FROM c"
                 total_items = list(source_container.query_items(
@@ -72,23 +80,29 @@ class DataMigrator:
                         break
 
                     items = list(page)
-
-                    # Updated code with system fields removal and content comparison
                     for item in items:
                         item_id = item.get("id")
                         if not item_id:
-                            log_error("Skipping item with no 'id'")
+                            log_error("Skipping item with missing 'id'")
                             errors += 1
                             pbar.update(1)
                             continue
 
                         pk_value = self._get_partition_key_value(item, target_pk_path)
 
-                        if pk_value is None or isinstance(pk_value, (dict, list)):
-                            log_error(f"Skipping item {item_id}: invalid/missing partition key '{target_pk_path}'")
+                        if pk_value is None or isinstance(pk_value, (dict, list)) or pk_value in ["", None]:
+                            log_error(
+                                f"Skipping item {item_id}: invalid or missing partition key '{target_pk_path}'\n"
+                                f"  Value: {repr(pk_value)}\n"
+                                f"  Full item: {json.dumps(item)}"
+                            )
                             errors += 1
                             pbar.update(1)
                             continue
+
+                        # Ensure partition key exists in body
+                        if target_pk_path not in item:
+                            item[target_pk_path] = pk_value
 
                         for attempt in range(1, self.max_retries + 1):
                             try:
@@ -99,16 +113,14 @@ class DataMigrator:
                                         partition_key=pk_value
                                     )
 
-                                    # Remove system fields (_etag, _rid, _self, _ts) from both source and target documents
+                                    # Remove system fields (_etag, _rid, _self, _ts)
                                     sanitized_target_doc = remove_system_fields(target_doc)
                                     sanitized_item = remove_system_fields(item)
 
                                     # Compare the content excluding system fields
                                     if sanitized_target_doc == sanitized_item:
-                                        # If item exists with the same data, skip it
                                         skipped += 1
                                     else:
-                                        # If data is different, update the item in the target
                                         item_to_write = item.copy()
                                         if self.sanitize:
                                             item_to_write = sanitize_document_recursive(item_to_write)
@@ -118,12 +130,10 @@ class DataMigrator:
                                         updated += 1
 
                                 except exceptions.CosmosResourceNotFoundError:
-                                    # Item does not exist, create new item
                                     item_to_write = item.copy()
                                     if self.sanitize:
                                         item_to_write = sanitize_document_recursive(item_to_write)
 
-                                    # Write to Cosmos DB
                                     target_container.create_item(body=item_to_write)
                                     inserted += 1
 
@@ -140,7 +150,6 @@ class DataMigrator:
                     continuation_token = page_iterator.continuation_token
                     if not continuation_token:
                         break
-
 
             duration = time.time() - start_time
             rate = (inserted + updated) / duration if duration > 0 else 0
@@ -201,6 +210,7 @@ class DataMigrator:
 
 # Helper function to remove system fields like _etag, _rid, _self, and _ts
 def remove_system_fields(doc):
+    """Recursively remove system fields from the document"""
     if isinstance(doc, dict):
         # Remove common system fields that vary during updates
         doc.pop("_etag", None)  # Remove _etag
