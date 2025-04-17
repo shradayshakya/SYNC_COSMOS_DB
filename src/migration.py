@@ -72,6 +72,8 @@ class DataMigrator:
                         break
 
                     items = list(page)
+
+                    # Updated code with system fields removal and content comparison
                     for item in items:
                         item_id = item.get("id")
                         if not item_id:
@@ -97,16 +99,26 @@ class DataMigrator:
                                         partition_key=pk_value
                                     )
 
-                                    # Compare _etag values
-                                    if item.get("_etag") == target_doc.get("_etag"):
+                                    # Remove system fields (_etag, _rid, _self, _ts) from both source and target documents
+                                    sanitized_target_doc = remove_system_fields(target_doc)
+                                    sanitized_item = remove_system_fields(item)
+
+                                    # Compare the content excluding system fields
+                                    if sanitized_target_doc == sanitized_item:
+                                        # If item exists with the same data, skip it
                                         skipped += 1
                                     else:
+                                        # If data is different, update the item in the target
                                         item_to_write = item.copy()
-                                        if self.sanitize: 
+                                        if self.sanitize:
                                             item_to_write = sanitize_document_recursive(item_to_write)
-                                        target_container.replace_item(item=target_doc, body=item_to_write)
+
+                                        # Write to Cosmos DB (replace the existing item)
+                                        target_container.replace_item(item=item_id, body=item_to_write)
                                         updated += 1
+
                                 except exceptions.CosmosResourceNotFoundError:
+                                    # Item does not exist, create new item
                                     item_to_write = item.copy()
                                     if self.sanitize:
                                         item_to_write = sanitize_document_recursive(item_to_write)
@@ -128,6 +140,7 @@ class DataMigrator:
                     continuation_token = page_iterator.continuation_token
                     if not continuation_token:
                         break
+
 
             duration = time.time() - start_time
             rate = (inserted + updated) / duration if duration > 0 else 0
@@ -185,3 +198,18 @@ class DataMigrator:
         except Exception as e:
             log_error(f"Failed to verify migration: {str(e)}")
             return False, 0, 0
+
+# Helper function to remove system fields like _etag, _rid, _self, and _ts
+def remove_system_fields(doc):
+    if isinstance(doc, dict):
+        # Remove common system fields that vary during updates
+        doc.pop("_etag", None)  # Remove _etag
+        doc.pop("_rid", None)   # Remove _rid
+        doc.pop("_self", None)  # Remove _self
+        doc.pop("_ts", None)    # Remove _ts (timestamp)
+        
+        # Recursively handle nested structures
+        for key in doc:
+            if isinstance(doc[key], (dict, list)):
+                remove_system_fields(doc[key])  # Recursively remove system fields from nested structures
+    return doc
