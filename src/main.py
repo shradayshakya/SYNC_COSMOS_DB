@@ -20,7 +20,7 @@ def get_args():
                         help="Target Cosmos DB account key")
     parser.add_argument("--batch-size", type=int, default=int(os.environ.get("BATCH_SIZE", "100")),
                         help="Number of documents to process in a batch")
-    parser.parse_args("--sanitize", type=bool, default=os.environ.get("SANITIZE", "false").lower() == "true")
+    parser.add_argument("--sanitize", type=bool, default=os.environ.get("SANITIZE", "false").lower() == "true")
     parser.add_argument("--max-retries", type=int, default=3,
                         help="Maximum number of retries for failed operations")
     parser.add_argument("--database", help="Migrate only this specific database")
